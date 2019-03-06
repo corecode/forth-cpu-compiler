@@ -55,6 +55,15 @@ class Primitive:
         forth.comma(self.op)
 
 
+class Literal:
+    def __init__(self, name, val):
+        self.name = name
+        self.val = val
+
+    def compile(self, forth):
+        forth.compile_literal(self.val)
+
+
 class ForthCompiler:
     def __init__(self):
         self.input = None
@@ -195,6 +204,10 @@ class ForthCompiler:
     def c_paren(self):
         self.parse(')')
 
+    @primitive('\\')
+    def c_backslash(self):
+        self.parse('\n')
+
     @primitive(':')
     def c_colon(self):
         self.last_word = self.word()
@@ -206,6 +219,12 @@ class ForthCompiler:
         self.comma(PRIMITIVES['EXIT'])
         self.wordlist.insert(0, Thread(self.last_word, self.last_xt))
         self.state = 0
+
+    @primitive('CONSTANT')
+    def c_constant(self):
+        val = self.pop()
+        name = self.word()
+        self.wordlist.insert(0, Literal(name, val))
 
     @primitive('IF')
     def c_if(self):
@@ -302,13 +321,33 @@ class ForthCompiler:
 
 
 if __name__ == '__main__':
-    c = ForthCompiler()
-    c.evaluate("""
+    source = """
+$100 constant GPIO
+$101 constant GPIO-DIR
+
 : ! !+ DROP ;
-: delay begin dup while 1 - repeat drop ;
-: toggle-blink ( n -- n ) 3 xor dup $100 ! ;
-: init-io 3 $101 ! ;
-: start init-io 1 begin 100 delay toggle-blink again ;
-""")
+
+: DELAY begin
+          dup
+        while
+          1 -
+        repeat
+        drop
+;
+
+: TOGGLE-BLINK ( n -- n ) 3 xor dup     GPIO ! ;
+: INIT-IO                 3         GPIO-DIR ! ;
+
+: START init-io
+        1                \ LED state
+        begin
+          100 delay
+          toggle-blink   \ state1 -- state2
+        again
+;
+"""
+    c = ForthCompiler()
+    c.evaluate(source)
     c.link()
+    print(source)
     print(c.disassemble())
