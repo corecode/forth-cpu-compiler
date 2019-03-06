@@ -60,6 +60,9 @@ class ForthCompiler:
         self.rstack = []
         self.state = 0
         self.output = []
+        self.last_word = None
+        self.last_addr = 0
+        self.last_op = None
         self.compiler = []
         self.wordlist = []
         self.fill_compiler()
@@ -78,7 +81,7 @@ class ForthCompiler:
 
     def link(self, entry='start'):
         xt, _ = self.search(entry)
-        self.output[0] = PRIMITIVES['CALL'] | xt.addr
+        self.output[0] = PRIMITIVES['BRANCH'] | xt.addr
 
     def push(self, val):
         self.stack.append(val)
@@ -151,7 +154,33 @@ class ForthCompiler:
         xt.compile(self)
 
     def comma(self, xt):
+        if xt == PRIMITIVES['EXIT']:
+            if self.maybe_merge_exit():
+                return
+        self.last_op = self.here
         self.output.append(xt)
+
+    def maybe_merge_exit(self):
+        if self.last_op != self.here - 1:
+            return False
+        op = self.output[self.last_op]
+        if op & PRIMITIVES['LIT'] or op & PRIMITIVES['0BRANCH'] == PRIMITIVES['0BRANCH']:
+            return False
+        if op & PRIMITIVES['BRANCH']:
+            # just drop the EXIT
+            return True
+        if op & PRIMITIVES['CALL']:
+            # convert CALL to BRANCH
+            op = (op & ~PRIMITIVES['CALL']) | PRIMITIVES['BRANCH']
+        elif op & PRIMITIVES['EXIT'] == PRIMITIVES['EXIT']:
+            # already an EXIT, so ignore this one
+            return True
+        elif op & 0x30: # rstack op
+            return False
+        else:
+            op |= PRIMITIVES['EXIT']
+        self.output[self.last_op] = op
+        return True
 
 
     @property
@@ -184,10 +213,12 @@ class ForthCompiler:
     def c_then(self):
         orig = self.pop()
         self.output[orig] |= self.here
+        self.last_op = None
 
     @primitive('BEGIN')
     def c_begin(self):
         self.push(self.here)
+        self.last_op = None
 
     @primitive('AGAIN')
     def c_again(self):
@@ -222,6 +253,11 @@ class ForthCompiler:
         self.c_then()
 
 
+    def addr2name(self, addr):
+        for word in self.wordlist:
+            if hasattr(word, 'addr') and word.addr == addr:
+                return word.name
+
     def disassemble(self):
         inverse_ops = {v: k for k, v in PRIMITIVES.items()}
 
@@ -229,7 +265,10 @@ class ForthCompiler:
         for addr, w in enumerate(self.output):
             def o(s):
                 nonlocal out
-                out += "%04x\t# % 4x: %s\n" % (w, addr, s)
+                name = self.addr2name(addr)
+                if name:
+                    out += "# %s\n" % name
+                out += "% 4x: %04x\t# %s\n" % (addr, w, s)
 
             bop = w & PRIMITIVES['0BRANCH']
             iop = inverse_ops.get(w)
@@ -238,9 +277,15 @@ class ForthCompiler:
                 o("%d" % (w & 0x7fff))
             elif bop:
                 bdest = w & 0x1fff
-                o("%s %x" % (inverse_ops.get(bop), bdest))
+                name = self.addr2name(bdest)
+                if name:
+                    o("%s %s (%04x)" % (inverse_ops.get(bop), name, bdest))
+                else:
+                    o("%s %04x" % (inverse_ops.get(bop), bdest))
             elif iop:
                 o(iop)
+            elif w & PRIMITIVES['EXIT'] == PRIMITIVES['EXIT'] and inverse_ops.get(w & ~PRIMITIVES['EXIT']):
+                o("%s EXIT" % inverse_ops.get(w & ~PRIMITIVES['EXIT']))
             else:
                 o("<unknown>")
 
@@ -251,11 +296,10 @@ if __name__ == '__main__':
     c = ForthCompiler()
     c.evaluate("""
 : ! !+ DROP ;
-: delay begin dup while 1 - repeat ;
+: delay begin dup while 1 - repeat drop ;
 : toggle-blink ( n -- n ) 3 xor dup $100 ! ;
 : init-io 3 $101 ! ;
 : start init-io 1 begin 100 delay toggle-blink again ;
 """)
     c.link()
-    print(c.stack)
     print(c.disassemble())
