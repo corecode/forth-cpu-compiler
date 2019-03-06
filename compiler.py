@@ -59,11 +59,12 @@ class ForthCompiler:
         self.stack = []
         self.rstack = []
         self.state = 0
-        self.output = [0]                 # entry vector
+        self.output = []
         self.compiler = []
         self.wordlist = []
         self.fill_compiler()
         self.fill_wordlist()
+        self.output.append(0)             # entry vector
 
     def evaluate(self, text):
         self.input = text
@@ -76,9 +77,8 @@ class ForthCompiler:
                 raise RuntimeError("%s while processing word `%s'" % (e, w)) from e
 
     def link(self, entry='start'):
-        # insert call
-        return self.output
-
+        xt, _ = self.search(entry)
+        self.output[0] = PRIMITIVES['CALL'] | xt.addr
 
     def push(self, val):
         self.stack.append(val)
@@ -126,7 +126,10 @@ class ForthCompiler:
                 self.compile_comma(xt)
         else:
             try:
-                val = int(w)
+                if w[0] == '$':
+                    val = int(w[1:], 16)
+                else:
+                    val = int(w)
                 if self.state:
                     self.compile_literal(val)
                 else:
@@ -185,7 +188,6 @@ class ForthCompiler:
     @primitive('BEGIN')
     def c_begin(self):
         self.push(self.here)
-        self.comma(0)
 
     @primitive('AGAIN')
     def c_again(self):
@@ -220,16 +222,40 @@ class ForthCompiler:
         self.c_then()
 
 
+    def disassemble(self):
+        inverse_ops = {v: k for k, v in PRIMITIVES.items()}
+
+        out = ""
+        for addr, w in enumerate(self.output):
+            def o(s):
+                nonlocal out
+                out += "%04x\t# % 4x: %s\n" % (w, addr, s)
+
+            bop = w & PRIMITIVES['0BRANCH']
+            iop = inverse_ops.get(w)
+
+            if w & PRIMITIVES['LIT']:
+                o("%d" % (w & 0x7fff))
+            elif bop:
+                bdest = w & 0x1fff
+                o("%s %x" % (inverse_ops.get(bop), bdest))
+            elif iop:
+                o(iop)
+            else:
+                o("<unknown>")
+
+        return out
+
+
 if __name__ == '__main__':
     c = ForthCompiler()
     c.evaluate("""
 : ! !+ DROP ;
 : delay begin dup while 1 - repeat ;
-: toggle-blink ( n -- n ) 3 xor dup 100 ! ;
-: init-io 3 101 ! ;
+: toggle-blink ( n -- n ) 3 xor dup $100 ! ;
+: init-io 3 $101 ! ;
 : start init-io 1 begin 100 delay toggle-blink again ;
 """)
     c.link()
     print(c.stack)
-    for w in c.output:
-        print("%04x" % w)
+    print(c.disassemble())
