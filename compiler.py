@@ -1,4 +1,7 @@
 import io
+import array
+import sys
+
 
 def primitive(name):
     def decorator(fn):
@@ -290,6 +293,12 @@ class ForthCompiler:
                 o("<unknown>")
 
         return out
+
+    def binary(self):
+        a = array.array('H', self.output)
+        if sys.byteorder == 'little':
+            a.byteswap()
+        return a.tobytes()
 
 
 if __name__ == '__main__':
