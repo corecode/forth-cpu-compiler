@@ -10,6 +10,11 @@ def primitive(name):
     return decorator
 
 
+MEMSIZE = 256
+CODESIZE = 256
+
+EXIT_BITS = 0x1030
+
 PRIMITIVES = {
     'NOP':     0x0800,
     'INVERT':  0x0700,
@@ -30,7 +35,7 @@ PRIMITIVES = {
     '0BRANCH': 0x6000,
     'CALL':    0x2000,
     'EXECUTE': 0x09e0,
-    'EXIT':    0x1030,
+    'EXIT':    0x1830,
     '!+':      0x0dc0,
     '@':       0x0c00,
     'LIT':     0x8000,
@@ -72,6 +77,7 @@ class ForthCompiler:
         self.rstack = []
         self.state = 0
         self.output = []
+        self.mem_pos = 0
         self.last_word = None
         self.last_addr = 0
         self.last_op = None
@@ -82,6 +88,8 @@ class ForthCompiler:
         self.output.append(0)             # entry vector
 
     def evaluate(self, text):
+        if hasattr(text, 'read'):
+            text = text.read()
         self.input = text
         while True:
             w = self.word()
@@ -94,6 +102,13 @@ class ForthCompiler:
     def link(self, entry='start'):
         xt, _ = self.search(entry)
         self.output[0] = PRIMITIVES['BRANCH'] | xt.addr
+        if self.here > CODESIZE:
+            raise RuntimeError("code memory overflow: %d > %d", self.mem_pos, CODESIZE)
+        if self.mem_pos > MEMSIZE:
+            raise RuntimeError("data memory overflow: %d > %d", self.mem_pos, MEMSIZE)
+
+    def warn(self, message):
+        print('Warning: %s' % message, file=sys.stderr)
 
     def push(self, val):
         self.stack.append(val)
@@ -190,7 +205,7 @@ class ForthCompiler:
         elif op & 0x30: # rstack op
             return False
         else:
-            op |= PRIMITIVES['EXIT']
+            op |= EXIT_BITS
         self.output[self.last_op] = op
         return True
 
@@ -219,12 +234,29 @@ class ForthCompiler:
         self.comma(PRIMITIVES['EXIT'])
         self.wordlist.insert(0, Thread(self.last_word, self.last_xt))
         self.state = 0
+        if len(self.stack) > 0:
+            self.warn("control flow stack is not balanced")
 
     @primitive('CONSTANT')
     def c_constant(self):
         val = self.pop()
         name = self.word()
         self.wordlist.insert(0, Literal(name, val))
+
+    @primitive('VARIABLE')
+    def c_variable(self):
+        name = self.word()
+        self.push(1)
+        self.c_allot()
+        addr = self.pop()
+        self.wordlist.insert(0, Literal(name, addr))
+
+    @primitive('ALLOT')
+    def c_allot(self):
+        count = self.pop()
+        addr = self.mem_pos
+        self.mem_pos += count
+        self.push(addr)
 
     @primitive('IF')
     def c_if(self):
@@ -321,33 +353,26 @@ class ForthCompiler:
 
 
 if __name__ == '__main__':
-    source = """
-$100 constant GPIO
-$101 constant GPIO-DIR
+    import argparse
 
-: ! !+ DROP ;
+    parser = argparse.ArgumentParser('forth compiler')
+    parser.add_argument('sources', nargs='+', type=argparse.FileType('r'))
+    parser.add_argument('--print-disassembly', action='store_true')
+    parser.add_argument('--output', '-o', type=argparse.FileType('wb'))
+    parser.add_argument('--output-hex', type=argparse.FileType('w'))
+    args = parser.parse_args()
 
-: DELAY begin
-          dup
-        while
-          1 -
-        repeat
-        drop
-;
+    if not args.output and not args.print_disassembly and not args.output_hex:
+        parser.error('did you forget one of --output, --output-hex, or --print-disassembly?')
 
-: TOGGLE-BLINK ( n -- n ) 3 xor dup     GPIO ! ;
-: INIT-IO                 3         GPIO-DIR ! ;
-
-: START init-io
-        1                \ LED state
-        begin
-          100 delay
-          toggle-blink   \ state1 -- state2
-        again
-;
-"""
     c = ForthCompiler()
-    c.evaluate(source)
+    for f in args.sources:
+        c.evaluate(f)
     c.link()
-    print(source)
-    print(c.disassemble())
+    if args.print_disassembly:
+        print(c.disassemble())
+    if args.output:
+        args.output.write(c.binary())
+    if args.output_hex:
+        for w in c.output:
+            print("%04x" % w, file=args.output_hex)
